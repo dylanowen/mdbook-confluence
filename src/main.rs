@@ -35,8 +35,6 @@ async fn render() -> Result<(), Error> {
         .unwrap_or_default(); // TODO throw an error here
 
     if config.enabled {
-        let confluence_renderer = ConfluenceRenderer::new(config).await?;
-
         if context.version != mdbook::MDBOOK_VERSION {
             // We should probably use the `semver` crate to check compatibility
             // here...
@@ -49,7 +47,11 @@ async fn render() -> Result<(), Error> {
             );
         }
 
+        let confluence_renderer = ConfluenceRenderer::new(config).await?;
+
         confluence_renderer.render(context).await?;
+
+        confluence_renderer.logout().await?;
     } else {
         info!("Confluence renderer is disabled")
     }

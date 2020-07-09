@@ -31,7 +31,8 @@ futures = "0.3"
 async-trait = "0.1"
 
 #toml = "0.5"
-confluence = { path = "../confluence-rs" }
+#confluence = { path = "../confluence-rs" }
+confluence = { git = "https://github.com/dylanowen/confluence-rs", branch = "client" }
 xmltree = "0.10"
 chrono = "0.4"
 base64 = "0.12"

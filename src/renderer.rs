@@ -1,6 +1,7 @@
-use crate::client;
-use crate::client::{AsyncSession, AttachmentRequest};
+use crate::client::EnhancedSession;
 use colored::*;
+use confluence::rpser::xml;
+use confluence::AttachmentRequest;
 use confluence::{Error as ConfluenceError, Page, PageSummary, Session, UpdatePage};
 use futures::future;
 use mdbook::book::Chapter;
@@ -16,7 +17,6 @@ use semver::Version;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
-use std::fs::File;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -57,17 +57,17 @@ trait AyncRenderer {
 }
 
 struct InternalRenderer {
-    session: Arc<Session>,
+    session: Session,
     server_version: Version,
     config: ConfluenceConfig,
 }
 
 impl ConfluenceRenderer {
     pub async fn new(config: ConfluenceConfig) -> Result<ConfluenceRenderer, Error> {
-        let session = client::login(
-            config.url.clone(),
-            config.username.clone(),
-            config.password.clone(),
+        let session = Session::login(
+            &config.url.clone(),
+            &config.username.clone(),
+            &config.password.clone(),
         )
         .await?;
 
@@ -86,7 +86,8 @@ impl ConfluenceRenderer {
 
     pub async fn render(&self, ctx: RenderContext) -> Result<(), Error> {
         let parent_page = self
-            .session()
+            .internal
+            .session
             .get_page_by_id(self.config().root_page)
             .await?;
 
@@ -100,8 +101,12 @@ impl ConfluenceRenderer {
             .await
     }
 
-    fn session(&self) -> &Arc<Session> {
-        &self.internal.session
+    pub async fn logout(self) -> Result<bool, Error> {
+        #[allow(clippy::match_wild_err_arm)]
+        match Arc::try_unwrap(self.internal) {
+            Ok(internal) => internal.session.logout().await.map_err(Into::into),
+            Err(_) => panic!("We should be done with our internal renderer"),
+        }
     }
 
     fn config(&self) -> &ConfluenceConfig {
@@ -128,9 +133,9 @@ impl InternalRenderer {
                     parent_id: Some(parent.id),
                 };
 
-                self.session.store_page(new_page).await
+                self.session.store_page(new_page).await.map_err(Into::into)
             }
-            Some(id) => self.session.get_page_by_id(id).await,
+            Some(id) => self.session.get_page_by_id(id).await.map_err(Into::into),
         }
     }
 
@@ -157,7 +162,7 @@ impl InternalRenderer {
                             &chapter_path,
                             existing_page.id,
                         )
-                        .await?
+                        .await
                     {
                         Some(new_url) => {
                             // if we have a new url update our tags
@@ -202,7 +207,7 @@ impl InternalRenderer {
         image_url: String,
         root_path: &PathBuf,
         page_id: i64,
-    ) -> Result<Option<String>, Error> {
+    ) -> Option<String> {
         lazy_static! {
             // borrowed from mdbook
             static ref SCHEME_LINK: Regex = Regex::new(r"^[a-z][a-z0-9+.-]*:").unwrap();
@@ -213,37 +218,39 @@ impl InternalRenderer {
             info!("Attempting to upload file: {}", image_url);
             // try to find our file to upload on disk
             let path = root_path.join(image_url);
-            let file_result = File::open(&path);
-            if let Ok(file) = file_result {
-                self.session
-                    .add_attachment(
-                        page_id,
-                        AttachmentRequest::new(
-                            path.file_name().and_then(OsStr::to_str).unwrap_or(""),
-                            MimeGuess::from_path(&path).first_or_octet_stream(),
-                            title,
-                            None,
-                        ),
-                        file,
-                    )
-                    .await
-                    .map(|a| match a.url {
-                        Some(file_url) => {
-                            info!("{} file at: {}", "Uploaded".green(), file_url);
-                            Some(file_url)
-                        }
-                        None => {
-                            error!("Uploaded an attachment but couldn't find a url for it");
-                            None
-                        }
-                    })
-            } else {
-                // we couldnt open our file so don't worry about it
-                warn!("Couldn't open file: {:?}", &path);
-                Ok(None)
+            let result = self
+                .session
+                .add_file(
+                    page_id,
+                    AttachmentRequest::new(
+                        path.file_name().and_then(OsStr::to_str).unwrap_or(""),
+                        MimeGuess::from_path(&path).first_or_octet_stream(),
+                        title,
+                        None,
+                    ),
+                    &path,
+                )
+                .await
+                .map(|a| match a.url {
+                    Some(file_url) => {
+                        info!("{} file at: {}", "Uploaded".green(), file_url);
+                        Some(file_url)
+                    }
+                    None => {
+                        error!("Uploaded an attachment but couldn't find a url for it");
+                        None
+                    }
+                });
+
+            match result {
+                Ok(url) => url,
+                Err(e) => {
+                    error!("Attempted to upload file but hit an error: {:?}", e);
+                    None
+                }
             }
         } else {
-            Ok(None)
+            None
         }
     }
 
@@ -339,7 +346,7 @@ impl AyncRenderer for Arc<InternalRenderer> {
                         deleted_child.title,
                         deleted_child.url
                     ),
-                    Err(e) => error!("{}", e),
+                    Err(e) => error!("{:?}", e),
                 }
             }
 
@@ -402,6 +409,12 @@ impl Display for Error {
 impl From<confluence::Error> for Error {
     fn from(e: ConfluenceError) -> Self {
         Error::Confluence(e)
+    }
+}
+
+impl From<xml::Error> for Error {
+    fn from(e: xml::Error) -> Self {
+        confluence::Error::from(e).into()
     }
 }
 

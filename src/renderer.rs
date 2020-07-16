@@ -32,7 +32,18 @@ pub struct ConfluenceConfig {
     pub url: String,
     pub username: String,
     pub password: String,
+    pub title_prefix: Option<String>,
     pub root_page: i64,
+}
+
+impl ConfluenceConfig {
+    fn chapter_title(&self, chapter: &Chapter) -> String {
+        format!(
+            "{}{}",
+            self.title_prefix.as_deref().unwrap_or(""),
+            chapter.name
+        )
+    }
 }
 
 pub struct ConfluenceRenderer {
@@ -127,7 +138,7 @@ impl InternalRenderer {
                 let new_page = UpdatePage {
                     id: None,
                     space: parent.space.clone(),
-                    title: chapter.name.clone(),
+                    title: self.config.chapter_title(chapter),
                     content: "".into(),
                     version: None,
                     parent_id: Some(parent.id),
@@ -194,7 +205,7 @@ impl InternalRenderer {
         Ok(UpdatePage {
             id: Some(existing_page.id),
             space: parent.space.clone(),
-            title: chapter.name.clone(),
+            title: self.config.chapter_title(chapter),
             content: self.to_page_content(&buf),
             version: Some(existing_page.version),
             parent_id: Some(parent.id),
@@ -312,7 +323,7 @@ impl AyncRenderer for Arc<InternalRenderer> {
                 if let BookItem::Chapter(chapter) = item {
                     let mut existing_page_id = None;
                     for i in (0..children.len()).rev() {
-                        if children[i].title == chapter.name {
+                        if children[i].title == self.config.chapter_title(&chapter) {
                             // we need to get the page version number so grab the id
                             existing_page_id = Some(children.remove(i).id);
                             break;

@@ -9,6 +9,7 @@ enabled = true # this lets you disable the renderer until you need it
 url = "https://your-confluence-url.com"
 username = "username"
 password = "for manual runs don't persist your password here"
+title_prefix = "Some prefix to keep your page names unique"
 root_page = 1234 # the page id of where to store your book
 ```
 

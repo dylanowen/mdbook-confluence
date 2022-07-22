@@ -1,4 +1,11 @@
-use crate::client::EnhancedSession;
+use std::ffi::OsStr;
+use std::fmt;
+use std::fmt::{Debug, Display, Formatter};
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
+
 use colored::*;
 use confluence::rpser::xml;
 use confluence::AttachmentRequest;
@@ -11,17 +18,12 @@ use mdbook::utils::new_cmark_parser;
 use mdbook::BookItem;
 use mime_guess::MimeGuess;
 use pulldown_cmark::{Event, Tag};
-use pulldown_cmark_to_cmark::fmt::cmark;
+use pulldown_cmark_to_cmark::cmark;
 use regex::Regex;
 use semver::Version;
-use std::ffi::OsStr;
-use std::fmt;
-use std::fmt::{Debug, Display, Formatter};
-use std::future::Future;
-use std::path::PathBuf;
-use std::pin::Pin;
-use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
+
+use crate::client::EnhancedSession;
 
 pub static RENDERER_NAME: &str = "confluence";
 
@@ -155,15 +157,17 @@ impl InternalRenderer {
         chapter: &Chapter,
         existing_page: Page,
         parent: &ParentPage,
-        root_path: &PathBuf,
+        root_path: &Path,
     ) -> Result<UpdatePage, Error> {
         let mut events = vec![];
         let mut last_image = None;
-        let mut chapter_path = chapter.path.clone();
-        chapter_path.pop();
-        chapter_path = root_path.join(&chapter_path);
 
-        for event in new_cmark_parser(&chapter.content) {
+        // assume we've already filtered out all the draft chapters
+        let mut chapter_path = root_path.join(chapter.path.as_ref().unwrap());
+        // remove the chapter filename
+        chapter_path.pop();
+
+        for event in new_cmark_parser(&chapter.content, false) {
             last_image = match (event, last_image) {
                 (Event::Start(Tag::Image(link_type, url, title)), None) => {
                     match self
@@ -199,7 +203,7 @@ impl InternalRenderer {
         }
 
         let mut buf = String::with_capacity(chapter.content.len());
-        cmark(events.iter(), &mut buf, None)
+        cmark(events.iter(), &mut buf)
             .map_err(|err| Error::Error(format!("Markdown serialization failed: {}", err)))?;
 
         Ok(UpdatePage {
@@ -216,7 +220,7 @@ impl InternalRenderer {
         &self,
         title: String,
         image_url: String,
-        root_path: &PathBuf,
+        root_path: &Path,
         page_id: i64,
     ) -> Option<String> {
         lazy_static! {
@@ -320,22 +324,25 @@ impl AyncRenderer for Arc<InternalRenderer> {
             let mut child_futures = vec![];
 
             for item in items.into_iter() {
-                if let BookItem::Chapter(chapter) = item {
-                    let mut existing_page_id = None;
-                    for i in (0..children.len()).rev() {
-                        if children[i].title == self.config.chapter_title(&chapter) {
-                            // we need to get the page version number so grab the id
-                            existing_page_id = Some(children.remove(i).id);
-                            break;
+                match item {
+                    BookItem::Chapter(chapter) if chapter.path.is_some() => {
+                        let mut existing_page_id = None;
+                        for i in (0..children.len()).rev() {
+                            if children[i].title == self.config.chapter_title(&chapter) {
+                                // we need to get the page version number so grab the id
+                                existing_page_id = Some(children.remove(i).id);
+                                break;
+                            }
                         }
-                    }
 
-                    child_futures.push(self.clone().render_page(
-                        chapter,
-                        parent_page.clone(),
-                        existing_page_id,
-                        root_path.clone(),
-                    ));
+                        child_futures.push(self.clone().render_page(
+                            chapter,
+                            parent_page.clone(),
+                            existing_page_id,
+                            root_path.clone(),
+                        ));
+                    }
+                    _ => (), // pass through all non-chapters
                 }
             }
 
